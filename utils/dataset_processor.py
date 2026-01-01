@@ -27,7 +27,7 @@ def get_date_range(start_date: str, end_date: str):
     delta = end - start
     return [(start + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(delta.days + 1)]
 
-def process_period_data(start_date, end_date, symbol, data_dir=DATA_ROOT, n_sig_figs=DEFAULT_N_SIG_FIGS):
+def process_period_data(start_date, end_date, symbol, data_dir=DATA_ROOT, n_sig_figs=DEFAULT_N_SIG_FIGS, dollar_volume_threshold=DOLLAR_VOLUME_THRESHOLD, vertical_barrier_n=50, min_ret=0.0015):
     """
     Process LOB and Trades data for a given period and symbol.
     
@@ -106,7 +106,7 @@ def process_period_data(start_date, end_date, symbol, data_dir=DATA_ROOT, n_sig_
     df_lob_all = pd.read_parquet(combined_lob_path)
     
     # 4. Dollar Volume Sampling
-    print(f"Sampling LOB by Dollar Volume (Threshold={DOLLAR_VOLUME_THRESHOLD})...")
+    print(f"Sampling LOB by Dollar Volume (Threshold={dollar_volume_threshold})...")
     
     # Convert timestamps
     df_lob_all['datetime'] = pd.to_datetime(df_lob_all['exchange_time'], unit='ms')
@@ -119,7 +119,7 @@ def process_period_data(start_date, end_date, symbol, data_dir=DATA_ROOT, n_sig_
     if 'values' not in df_trades_all.columns:
         df_trades_all['values'] = df_trades_all['px'].astype(float) * df_trades_all['sz'].astype(float)
         
-    df_sampled = sample_lob_by_dollar_volume(df_lob_all, df_trades_all, DOLLAR_VOLUME_THRESHOLD)
+    df_sampled = sample_lob_by_dollar_volume(df_lob_all, df_trades_all, dollar_volume_threshold)
     
     if df_sampled.empty:
         print("Warning: Sampled dataframe is empty.")
@@ -139,8 +139,8 @@ def process_period_data(start_date, end_date, symbol, data_dir=DATA_ROOT, n_sig_
     
     df_labeled = apply_triple_barrier_labeling(
         df_sampled, 
-        vertical_barrier_n=50, 
-        min_ret=0.0015, 
+        vertical_barrier_n=vertical_barrier_n, 
+        min_ret=min_ret, 
         pt=1, 
         sl=1
     )
@@ -154,7 +154,7 @@ def process_period_data(start_date, end_date, symbol, data_dir=DATA_ROOT, n_sig_
         
     return df_labeled
 
-def prepare_datasets(train_start, train_end, val_start, val_end, symbol, output_dir=None):
+def prepare_datasets(train_start, train_end, val_start, val_end, symbol, output_dir=None, dollar_volume_threshold=DOLLAR_VOLUME_THRESHOLD, vertical_barrier_n=50, min_ret=0.0015):
     """
     Main entry point to prepare Train and Validation datasets.
     """
@@ -168,7 +168,10 @@ def prepare_datasets(train_start, train_end, val_start, val_end, symbol, output_
     
     # --- Process Training Set ---
     print(f"\n>>> Generating Training Set ({train_start} -> {train_end})")
-    df_train = process_period_data(train_start, train_end, symbol)
+    df_train = process_period_data(train_start, train_end, symbol, 
+                                     dollar_volume_threshold=dollar_volume_threshold, 
+                                     vertical_barrier_n=vertical_barrier_n, 
+                                     min_ret=min_ret)
     if df_train is not None:
         train_path = os.path.join(output_dir, f"{symbol}_train.parquet")
         df_train.to_parquet(train_path)
@@ -178,7 +181,10 @@ def prepare_datasets(train_start, train_end, val_start, val_end, symbol, output_
 
     # --- Process Validation Set ---
     print(f"\n>>> Generating Validation Set ({val_start} -> {val_end})")
-    df_val = process_period_data(val_start, val_end, symbol)
+    df_val = process_period_data(val_start, val_end, symbol, 
+                                   dollar_volume_threshold=dollar_volume_threshold, 
+                                   vertical_barrier_n=vertical_barrier_n, 
+                                   min_ret=min_ret)
     if df_val is not None:
         val_path = os.path.join(output_dir, f"{symbol}_val.parquet")
         df_val.to_parquet(val_path)
@@ -188,18 +194,32 @@ def prepare_datasets(train_start, train_end, val_start, val_end, symbol, output_
         
     print("\n========== ALL TASKS COMPLETED ==========")
 
+import argparse
+
 if __name__ == "__main__":
-    # Example Usage
-    # You can modify these variables or add argparse if needed
-    SYMBOL = 'BTC'
-    
-    # Define your intervals here
-    TRAIN_START = '2025-12-18'
-    TRAIN_END = '2025-12-23' # Inclusive
+    parser = argparse.ArgumentParser(description="Prepare dataset for crypto modeling")
 
+    parser.add_argument("--symbol", type=str, required=True, help="Symbol, e.g., BTC")
+    parser.add_argument("--train-start", type=str, required=True, help="Training start date YYYY-MM-DD")
+    parser.add_argument("--train-end", type=str, required=True, help="Training end date YYYY-MM-DD")
+    parser.add_argument("--val-start", type=str, required=True, help="Validation start date YYYY-MM-DD")
+    parser.add_argument("--val-end", type=str, required=True, help="Validation end date YYYY-MM-DD")
 
-    VAL_START = '2025-12-23'
-    VAL_END = '2025-12-25'     # Inclusive
-    
-    # Run
-    prepare_datasets(TRAIN_START, TRAIN_END, VAL_START, VAL_END, SYMBOL)
+    # 可调参数
+    parser.add_argument("--dollar-volume-threshold", type=float, default=7000)
+    parser.add_argument("--vertical-barrier-n", type=int, default=60)
+    parser.add_argument("--min-ret", type=float, default=0.002)
+
+    args = parser.parse_args()
+
+    # 调用你的函数
+    prepare_datasets(
+        args.train_start,
+        args.train_end,
+        args.val_start,
+        args.val_end,
+        args.symbol,
+        dollar_volume_threshold=args.dollar_volume_threshold,
+        vertical_barrier_n=args.vertical_barrier_n,
+        min_ret=args.min_ret
+    )
