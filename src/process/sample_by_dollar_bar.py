@@ -1,13 +1,3 @@
-import pandas as pd
-import glob
-import os
-        
-import pandas as pd
-import numpy as np
-import warnings
-from fetch_data.src.process.calculate_factor.lob_factors import calculate_obi, calculate_ofi,calculate_depth_structure
-from fetch_data.src.process.calculate_factor.trade_factors import prepare_trade_features
-
 def sample_lob_by_dollar_volume(lob_df, trades_df, threshold):
     """
     基于成交额阈值对LOB数据进行采样，并计算核心因子 (NAV, VWAP Divergence, OBI, OFI)。
@@ -30,16 +20,25 @@ def sample_lob_by_dollar_volume(lob_df, trades_df, threshold):
     trades_df = trades_df.sort_index()
     
     # --- Feature Pre-calculation (Vectorized) ---
-    # LOB Factors: OBI (Snapshot), OFI (Flow)
-    lob_df['obi'] = calculate_obi(lob_df)
-    lob_df['ofi'] = calculate_ofi(lob_df)
-    lob_df=calculate_depth_structure(lob_df)
+    # Use registry to calculate all registered factors
+    # We ignore the agg_rules here as dollar bars use custom aggregation
+    _ = lob_registry.apply_and_get_agg_rules(lob_df)
+    
     # Calculate Cumsum of OFI for fast interval aggregation
     # Prepend 0 to align with 0-based indexing strategy or just use .cumsum()
     lob_ofi_cumsum = lob_df['ofi'].cumsum()
     
     # Trade Features Prep
-    trades_df = prepare_trade_features(trades_df)
+    # Use trade registry to calculate features (e.g. signed_vol, amount)
+    trade_agg_rules = trade_registry.apply_and_get_agg_rules(trades_df)
+    
+    # Ensure 'values' column exists for dollar bar sampling logic
+    if 'values' not in trades_df.columns:
+        # If amount is calculated, use it, otherwise calc manually
+        if 'amount' in trades_df.columns:
+            trades_df['values'] = trades_df['amount']
+        else:
+             trades_df['values'] = trades_df['px'] * trades_df['sz']
     
     # --------------------------------------------
     
@@ -132,20 +131,38 @@ def sample_lob_by_dollar_volume(lob_df, trades_df, threshold):
         # Only aggregate trades that fall into valid bins (0 to N-1)
         valid_trades = trades_df[trades_df['bar_id'].notna()]
         
-        trade_agg = valid_trades.groupby('bar_id').agg({
-            'signed_vol': 'sum',
-            'qty': 'sum',
-            'amount': 'sum'
-        })
+        # Use aggregation rules from registry, plus defaults if not present
+        agg_dict = {k: v for k, v in trade_agg_rules.items() if k in valid_trades.columns}
+        
+        # Ensure we have what we need for legacy calculations if not in registry
+        if 'signed_vol' not in agg_dict and 'signed_vol' in valid_trades.columns: agg_dict['signed_vol'] = 'sum'
+        if 'qty' not in agg_dict and 'qty' in valid_trades.columns: agg_dict['qty'] = 'sum'
+        if 'amount' not in agg_dict and 'amount' in valid_trades.columns: agg_dict['amount'] = 'sum'
+            
+        trade_agg = valid_trades.groupby('bar_id').agg(agg_dict)
+        
+        # --- Apply Group Factors (if any) ---
+        group_apply_func = trade_registry.get_group_apply_func()
+        if group_apply_func:
+            # Note: groupby().apply() returns a DataFrame with index 'bar_id' if func returns Series
+            advanced_features = valid_trades.groupby('bar_id').apply(group_apply_func)
+            # Join with trade_agg (both indexed by bar_id)
+            trade_agg = trade_agg.join(advanced_features)
         
         # Calculate Factors
         # 1. Trade Imbalance (NAV)
         # Avoid division by zero
-        trade_agg['trade_imbalance'] = trade_agg['signed_vol'] / (trade_agg['qty'] + 1e-8)
+        if 'signed_vol' in trade_agg.columns and 'qty' in trade_agg.columns:
+            trade_agg['trade_imbalance'] = trade_agg['signed_vol'] / (trade_agg['qty'] + 1e-8)
+        else:
+            trade_agg['trade_imbalance'] = np.nan
         
         # 2. VWAP Divergence
         # VWAP = Sum(Amount) / Sum(Qty)
-        trade_agg['vwap'] = trade_agg['amount'] / (trade_agg['qty'] + 1e-8)
+        if 'amount' in trade_agg.columns and 'qty' in trade_agg.columns:
+            trade_agg['vwap'] = trade_agg['amount'] / (trade_agg['qty'] + 1e-8)
+        else:
+            trade_agg['vwap'] = np.nan
         
         # Map aggregated factors back to sampled_df
         # sampled_df has length N. trade_agg should have index 0..N-1
@@ -176,4 +193,3 @@ def sample_lob_by_dollar_volume(lob_df, trades_df, threshold):
         sampled_df['vwap_divergence'] = np.nan
 
     return sampled_df
-        

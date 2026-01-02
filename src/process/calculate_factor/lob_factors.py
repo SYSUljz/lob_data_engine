@@ -1,6 +1,8 @@
 import pandas as pd
 import numpy as np
+from .registry import lob_registry
 
+@lob_registry.register(agg_rule='mean')
 def calculate_obi(lob_df, levels=5):
     """
     Calculate Order Book Imbalance (OBI).
@@ -36,9 +38,10 @@ def calculate_obi(lob_df, levels=5):
     # Generate factor
     # Add 1e-8 to prevent division by zero
     obi = (total_bid_qty - total_ask_qty) / (total_bid_qty + total_ask_qty + 1e-8)
-    
+    obi.name = 'obi'
     return obi
 
+@lob_registry.register(agg_rule='sum')
 def calculate_ofi(lob_df):
     """
     Calculate Order Flow Imbalance (OFI) - Cont et al. 2014.
@@ -83,12 +86,19 @@ def calculate_ofi(lob_df):
     
     # Handle the first NaN row (caused by shift)
     ofi.iloc[0] = 0
-    
+    ofi.name = 'ofi'
     return ofi
 
 import pandas as pd
 import numpy as np
 
+@lob_registry.register(agg_rule={
+    'bid_cog': 'mean', 
+    'ask_cog': 'mean', 
+    'bid_concentration': 'last',
+    'ask_concentration': 'last',
+    'cog_diff': 'mean'
+})
 def calculate_depth_structure(lob_df, levels=10):
     """
     计算订单簿的分布结构特征：重心 (Center of Gravity) 和 头部集中度 (Concentration).
