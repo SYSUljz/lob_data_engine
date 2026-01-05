@@ -177,7 +177,8 @@ async def main():
         try:
             logger.info(f"Connecting to {ws_url}...")
             # Disable client-side pings to rely on Server's Pings (3min interval)
-            async with websockets.connect(ws_url, ping_interval=None) as ws:
+            # Increase max_queue to buffer more messages during snapshot processing
+            async with websockets.connect(ws_url, ping_interval=None, max_queue=10000) as ws:
                 logger.info("Connected.")
                 
                 # Subscribe

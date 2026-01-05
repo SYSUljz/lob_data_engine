@@ -72,3 +72,14 @@ PartialDepthData = TypedDict("PartialDepthData", {
     "asks": List[DepthLevel]
 })
 
+DepthUpdateMsg = TypedDict("DepthUpdateMsg", {
+    "e": Literal["depthUpdate"],
+    "E": int,
+    "s": str,
+    "U": int,
+    "u": int,
+    "pu": int,
+    "b": List[DepthLevel],
+    "a": List[DepthLevel]
+})
+
