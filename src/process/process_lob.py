@@ -150,51 +150,6 @@ def process_lob_parquet(input_path, output_path, start_session_id=0):
     
     current_max_session_id = df['session_id'].max()
     print(f"Session ID 范围: {df['session_id'].min()} -> {current_max_session_id}")
-
-    # ==========================================
-    # 4. 组内计算 Label (Rolling)
-    # ==========================================
-    print("计算 Label...")
-    k_values = [5, 10, 30, 50] # 根据你的需求调整，移除了由小变大的冗余
-    
-    # 这里的技巧是利用 groupby().transform 保持索引对齐，避免 apply 的低效
-    grouped = df.groupby('session_id')['mid_price']
-    
-    for k in k_values:
-        # 过去 k 个的均值
-        m_minus = grouped.transform(lambda x: x.rolling(window=k).mean())
-        
-        # 未来 k 个的均值 (shift(-k) 获取未来数据，再 rolling)
-        # 注意：user 原逻辑是 rolling(k).mean().shift(-k)，即 "未来 k 个时间步处的那个时刻的 过去 k 均值"
-        # 通常 DeepLOB 逻辑是：未来 k 个 tick 的平均价格 vs 当前 k 个 tick 的平均价格
-        # 按照你原代码逻辑：
-        m_plus = grouped.transform(lambda x: x.rolling(window=k).mean().shift(-k))
-        
-        # 计算变化率
-        raw_change = (m_plus - m_minus) / m_minus
-        
-        # === 动态阈值 Labeling ===
-        # 获取有效数据的 33% 和 66% 分位数
-        valid_changes = raw_change.dropna()
-        if valid_changes.empty:
-            df[f'label_{k}'] = np.nan
-            continue
-            
-        th_down = valid_changes.quantile(0.3333)
-        th_up = valid_changes.quantile(0.6667)
-        
-        # 生成标签
-        labels = pd.Series(0, index=df.index) # 默认为 0
-        labels[raw_change > th_up] = 1
-        labels[raw_change < th_down] = -1
-        labels[raw_change.isna()] = np.nan # 保持无效值为 NaN
-        
-        df[f'label_{k}'] = labels
-
-    # 删除无法计算 Label 的行 (通常是 session 尾部)
-    # 只要主要 Label (例如 label_10) 是 NaN 就删除，或者删除所有 Label 都是 NaN 的
-    label_cols = [f'label_{k}' for k in k_values]
-    df = df.dropna(subset=label_cols)
     
     if df.empty:
         print("警告: 清洗后数据为空")
@@ -245,7 +200,6 @@ def process_lob_parquet(input_path, output_path, start_session_id=0):
         df_bid_px,
         df_ask_sz,
         df_bid_sz,
-        df[label_cols].reset_index(drop=True),
         df[['session_id']].reset_index(drop=True)
     ], axis=1)
 

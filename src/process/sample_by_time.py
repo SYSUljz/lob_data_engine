@@ -1,120 +1,86 @@
 import pandas as pd
 import glob
 import os
-        
-import pandas as pd
 import numpy as np
 import warnings
 # Import registry and the factors module to trigger registration
-from fetch_data.src.process.calculate_factor.registry import lob_registry,trade_registry
+from fetch_data.src.process.calculate_factor.registry import lob_registry, trade_registry
 import fetch_data.src.process.calculate_factor.lob_factors 
-from fetch_data.src.process.calculate_factor.trade_factors import prepare_trade_features, calculate_advanced_microstructure
+import fetch_data.src.process.calculate_factor.trade_factors
 
 def sample_lob_by_time(lob_df, trades_df, interval):
     """
-    基于时间间隔对LOB数据进行采样，并计算核心因子 (OHLC, VWAP, Volatility, Spread/Imbalance Mean)。
+    基于时间间隔对LOB数据进行采样，并计算核心因子 (OHLC, VWAP, Volatility, Spread/Imbalance Mean).
     
-    参数:
-    lob_df (pd.DataFrame): LOB数据，Index为datetime
-    trades_df (pd.DataFrame): 成交数据，Index为datetime，必须包含 'values' 列
-    interval (str): 时间间隔 (Time Bar Interval), e.g., '1m', '5s'
-    
-    返回:
-    pd.DataFrame: 采样后的LOB数据
+    Refactored to use FactorRegistry for Open-Closed Principle adherence.
     """
-    # 1. 数据对齐与预处理
+    # 1. Data Alignment & Sorting
     lob_df = lob_df.sort_index()
     trades_df = trades_df.sort_index()
     
-    # --- Feature Pre-calculation ---
-    trades_df = prepare_trade_features(trades_df)
-      
-    # Prepare LOB Factors
-    if 'mid_price' not in lob_df.columns:
-        lob_df['mid_price'] = (lob_df['bid_px_0'] + lob_df['ask_px_0']) / 2
+    # 2. Validation
+    lob_df = lob_registry.validate(lob_df)
+    trades_df = trade_registry.validate(trades_df)
     
-    lob_df['spread'] = lob_df['ask_px_0'] - lob_df['bid_px_0']
-
-    # 2. Resample LOB
-    # Base aggregation rules
+    # 3. LOB Processing
+    # Base agg rules for metadata
     agg_rules = {
-        'mid_price': 'last',
-        'spread': 'mean',
-        'session_id':'last'
+        'session_id': 'last'
     }
     
-    # Use registry to calculate all registered factors and get their agg rules
+    # Apply LOB factors (includes mid_price, spread, OBI, etc.)
+    # This modifies lob_df in-place adding feature columns
     factor_rules = lob_registry.apply_and_get_agg_rules(lob_df)
     agg_rules.update(factor_rules)
     
+    # Resample LOB
     sampled_df = lob_df.resample(interval).agg(agg_rules)
-    sampled_df['snapshot_count'] = lob_df['mid_price'].resample(interval).count()
+    sampled_df['snapshot_count'] = lob_df.iloc[:, 0].resample(interval).count()
     
-    # Drop empty bins (where no LOB state exists)
-    sampled_df = sampled_df.dropna(subset=['mid_price'])
+    # Drop empty bins (where no LOB state exists - check a core column like mid_price)
+    if 'mid_price' in sampled_df.columns:
+        sampled_df = sampled_df.dropna(subset=['mid_price'])
     
-    # 3. Aggregate Trades
-    if 'values' not in trades_df.columns:
-         trades_df['values'] = trades_df['px'] * trades_df['sz']
-
-    trades_df['px']=trades_df['px'].astype(float)
+    # 4. Trades Processing
+    # Apply Trade row-wise factors (includes tick_ret, side, amount, values)
+    _ = trade_registry.apply_and_get_agg_rules(trades_df)
     
-    # Calculate Tick Returns for Realized Volatility
-    trades_df['tick_ret'] = trades_df['px'].pct_change()
-
+    # Resample Trades using Group Factors (OHLC, Volatility, Sums, Advanced)
     trade_resampler = trades_df.resample(interval)
-
-    # OHLC
-    ohlc = trade_resampler['px'].ohlc()
-    
-    # Realized Volatility (Std of tick returns)
-    realized_vol = trade_resampler['tick_ret'].std().rename('realized_volatility')
-
-    # Sums
-    trade_sums = trade_resampler.agg({
-        'signed_vol': 'sum',
-        'qty': 'sum',
-        'amount': 'sum',
-        'values': 'sum'
-    })
-
-    # Combine Trade Features
-    trade_features = pd.concat([ohlc, trade_sums, realized_vol], axis=1)
-    
-    # --- Apply Group Factors (if any) ---
     group_apply_func = trade_registry.get_group_apply_func()
-    if group_apply_func:
-        advanced_features = trade_resampler.apply(group_apply_func)
-        # advanced_features index is DatetimeIndex, matches trade_features
-        trade_features = pd.concat([trade_features, advanced_features], axis=1)
     
-    # 4. Merge Trades info into Sampled LOB
-    # Reindex trade_features to match sampled_df index
+    if group_apply_func:
+        # Calculate all group factors in one pass
+        trade_features = trade_resampler.apply(group_apply_func)
+    else:
+        # Should not happen if basic stats are registered
+        trade_features = pd.DataFrame(index=sampled_df.index)
+
+    # 5. Merge & Post-Process
+    # Reindex trade_features to match sampled_df index (fill missing with appropriate defaults?)
+    # Note: trade_features index might be slightly different if periods are missing, strict alignment to LOB is usually desired
     trade_features = trade_features.reindex(sampled_df.index)
     
-    # Fill missing sums with 0
-    trade_features[['signed_vol', 'qty', 'amount', 'values']] = \
-        trade_features[['signed_vol', 'qty', 'amount', 'values']].fillna(0)
-    
+    # Fill missing sums with 0 (for intervals with no trades)
+    fill_zero_cols = ['signed_vol', 'qty', 'amount', 'values', 'liq_usd_vol', 'liq_freq']
+    for col in fill_zero_cols:
+        if col in trade_features.columns:
+            trade_features[col] = trade_features[col].fillna(0)
+            
     # Join
     sampled_df = sampled_df.join(trade_features)
-    sampled_df.rename(columns={'values': 'interval_volume'}, inplace=True)
     
-    # Calculate Factors
-    qty = sampled_df['qty'] + 1e-8
-    sampled_df['trade_imbalance'] = sampled_df['signed_vol'] / qty
+    if 'values' in sampled_df.columns:
+        sampled_df.rename(columns={'values': 'interval_volume'}, inplace=True)
     
-    sampled_df['vwap'] = sampled_df['amount'] / qty
-    
-    # Mid Price for divergence (Use Trade Close if available, else Mid Price)
-    close_prices = sampled_df['close'].combine_first(sampled_df['mid_price'])
-        
-    sampled_df['vwap_divergence'] = (close_prices - sampled_df['vwap']) / (close_prices + 1e-8)
-    
-    # Handle no-trade cases for Divergence
-    mask_no_trade = sampled_df['qty'] < 1e-7
-    sampled_df.loc[mask_no_trade, 'vwap_divergence'] = 0
-    
+    # Fill NaN values for derived factors if necessary
+    # Note: trade_factors.py handles basic defaults, but if resampling created empty rows, they might be NaN.
+    # We may want to fill 'vwap_divergence' and 'trade_imbalance' with 0 for empty bins.
+    if 'vwap_divergence' in sampled_df.columns:
+        sampled_df['vwap_divergence'] = sampled_df['vwap_divergence'].fillna(0)
+    if 'trade_imbalance' in sampled_df.columns:
+        sampled_df['trade_imbalance'] = sampled_df['trade_imbalance'].fillna(0)
+
     return sampled_df
 
         
