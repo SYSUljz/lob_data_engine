@@ -9,9 +9,11 @@ import time
 import subprocess
 import os
 from datetime import datetime
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Union
 
 import requests
+
+from src.raw_data_schemas import HyperliquidProcessedSnapshot, HyperliquidProcessedTrade
 
 try:
     from . import config

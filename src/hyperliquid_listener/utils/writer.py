@@ -4,20 +4,24 @@ import asyncio
 import logging
 import os
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Union
 
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from src.raw_data_schemas import HyperliquidProcessedSnapshot, HyperliquidProcessedTrade
+
 logger = logging.getLogger(__name__)
+
+HyperliquidData = Union[HyperliquidProcessedSnapshot, HyperliquidProcessedTrade]
 
 class ParquetWriter:
     def __init__(self, output_dir: str, flush_interval_seconds: int = 60, batch_size: int = 10000):
         self.output_dir = output_dir
         self.flush_interval_seconds = flush_interval_seconds
         self.batch_size = batch_size
-        self.queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue()
+        self.queue: asyncio.Queue[HyperliquidData] = asyncio.Queue()
         self._running = False
         self._process_task: asyncio.Task | None = None
 
@@ -31,11 +35,11 @@ class ParquetWriter:
         if self._process_task:
             await self._process_task
 
-    async def add_data(self, data: Dict[str, Any]):
+    async def add_data(self, data: HyperliquidData):
         await self.queue.put(data)
 
     async def _process_queue(self):
-        buffer: List[Dict[str, Any]] = []
+        buffer: List[HyperliquidData] = []
         last_flush_time = datetime.now().timestamp()
 
         while self._running or not self.queue.empty():

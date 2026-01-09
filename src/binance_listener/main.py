@@ -12,6 +12,8 @@ import websockets
 from websockets.exceptions import ConnectionClosed
 import requests
 
+from src.raw_data_schemas import BinanceTrade, BinanceDiff, BinanceSnapshot
+
 try:
     from . import config
     from .writer import ParquetWriter
