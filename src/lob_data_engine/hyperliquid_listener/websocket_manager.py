@@ -1,17 +1,18 @@
 import json
 import time
-import logging
 import threading
 from collections import defaultdict
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple
 
 import websocket
-from websocket import WebSocketConnectionClosedException
 
-from .utils.types import Any, Callable, Dict, List, NamedTuple, Optional, Subscription, Tuple, WsMsg
+from .utils.types import Subscription, WsMsg, WsMsg as WsMsgType
+from lob_data_engine.logging.factory import get_logger
+
+logger = get_logger(name="websocket_manager", exchange="Hyperliquid")
 
 ActiveSubscription = NamedTuple("ActiveSubscription", [("callback", Callable[[Any], None]), ("subscription_id", int)])
 
-# --- 保持原有的 identifier 转换函数不变 ---
 def subscription_to_identifier(subscription: Subscription) -> str:
     if subscription["type"] == "allMids":
         return "allMids"
@@ -39,8 +40,9 @@ def subscription_to_identifier(subscription: Subscription) -> str:
         return f'activeAssetCtx:{subscription["coin"].lower()}'
     elif subscription["type"] == "activeAssetData":
         return f'activeAssetData:{subscription["coin"].lower()},{subscription["user"].lower()}'
+    return "unknown"
 
-def ws_msg_to_identifier(ws_msg: WsMsg) -> Optional[str]:
+def ws_msg_to_identifier(ws_msg: WsMsgType) -> Optional[str]:
     if ws_msg["channel"] == "pong":
         return "pong"
     elif ws_msg["channel"] == "allMids":
@@ -73,22 +75,7 @@ def ws_msg_to_identifier(ws_msg: WsMsg) -> Optional[str]:
         return f'activeAssetCtx:{ws_msg["data"]["coin"].lower()}'
     elif ws_msg["channel"] == "activeAssetData":
         return f'activeAssetData:{ws_msg["data"]["coin"].lower()},{ws_msg["data"]["user"].lower()}'
-
-import json
-import time
-import logging
-import threading
-from collections import defaultdict
-
-import websocket
-# from websocket import WebSocketConnectionClosedException # 代码中未直接使用，保留或注释
-
-from .utils.types import Any, Callable, Dict, List, NamedTuple, Optional, Subscription, Tuple, WsMsg
-
-ActiveSubscription = NamedTuple("ActiveSubscription", [("callback", Callable[[Any], None]), ("subscription_id", int)])
-
-# ... (subscription_to_identifier 和 ws_msg_to_identifier 函数保持不变，此处省略) ...
-# 请保留你原有的 subscription_to_identifier 和 ws_msg_to_identifier 函数代码
+    return None
 
 class WebsocketManager(threading.Thread):
     def __init__(self, base_url):
@@ -104,13 +91,13 @@ class WebsocketManager(threading.Thread):
         self.ws_url = "ws" + base_url[len("http") :] + "/ws"
         self.ws = None 
         
-        # --- 配置参数 ---
-        self.idle_threshold = 1.0      # 1秒没消息就发 Ping
-        self.wait_pong_timeout = 2.0   # 发出 Ping 后 2 秒没回应则重连
+        # --- Config ---
+        self.idle_threshold = 1.0      
+        self.wait_pong_timeout = 2.0   
         
-        self.last_response_time = 0    # 任何消息（含 Pong）的时间
-        self.last_data_time = 0        # 仅限业务数据的时间
-        self.last_quiet_log_time = 0   # 用于控制“数据静默”日志的频率
+        self.last_response_time = 0    
+        self.last_data_time = 0        
+        self.last_quiet_log_time = 0   
         
         self.ping_sent_time = 0      
         self.is_awaiting_pong = False 
@@ -124,7 +111,7 @@ class WebsocketManager(threading.Thread):
 
     def run(self):
         while not self.stop_event.is_set():
-            logging.info(f"Connecting to websocket: {self.ws_url}...")
+            logger.info(f"Connecting to websocket: {self.ws_url}...")
             self.ws = websocket.WebSocketApp(
                 self.ws_url, 
                 on_message=self.on_message, 
@@ -136,7 +123,7 @@ class WebsocketManager(threading.Thread):
             self.ws_connected_event.set()
             now = time.time()
             self.last_response_time = now
-            self.last_data_time = now  # 初始化业务数据时间
+            self.last_data_time = now
             self.is_awaiting_pong = False 
             
             ping_thread = threading.Thread(target=self._keep_alive_loop)
@@ -150,76 +137,66 @@ class WebsocketManager(threading.Thread):
             ping_thread.join(timeout=2.0)
             
             if not self.stop_event.is_set():
-                logging.warning(f"Connection lost. Reconnecting in {self.current_reconnect_delay}s...")
+                logger.warning(f"Connection lost. Reconnecting in {self.current_reconnect_delay}s...")
                 time.sleep(self.current_reconnect_delay)
                 self.current_reconnect_delay = min(self.max_reconnect_delay, self.current_reconnect_delay * 2)
 
     def _keep_alive_loop(self):
-        """
-        高频监控：不仅监控断连，还监控业务数据静默
-        """
-        logging.debug("Aggressive Keep-alive thread started.")
+        logger.debug("Aggressive Keep-alive thread started.")
         
         while self.ws_connected_event.is_set() and not self.stop_event.is_set():
             current_time = time.time()
-            self.ws_connected_event.wait(0.1) # 高频轮询
+            self.ws_connected_event.wait(0.1) 
             
             if not self.ws_connected_event.is_set():
                 break
 
+            if not self.ws_ready:
+                continue
+
             time_since_last_msg = current_time - self.last_response_time
             time_since_last_data = current_time - self.last_data_time
 
-            # --- 1. 断连判定逻辑 ---
             if self.is_awaiting_pong:
                 time_since_ping = current_time - self.ping_sent_time
                 if time_since_ping > self.wait_pong_timeout:
-                    # 彻底没反应（连 Pong 都没有），强制断开重连
-                    logging.error(f"Network Timeout! No response for {time_since_ping:.2f}s. Reconnecting...")
+                    logger.error(f"Network Timeout! No response for {time_since_ping:.2f}s. Reconnecting...")
                     if self.ws: self.ws.close()
                     break
             else:
                 if time_since_last_msg > self.idle_threshold:
-                    # 超过阈值没收到任何东西，发送 Ping 探测
-                    logging.debug(f"Idle for {time_since_last_msg:.2f}s, sending Ping...")
+                    logger.debug(f"Idle for {time_since_last_msg:.2f}s, sending Ping...")
                     self._send_ping_payload()
                     self.ping_sent_time = current_time
                     self.is_awaiting_pong = True
 
-            # --- 2. 业务数据静默检测 (每 5s 提醒一次) ---
-            # 如果连接是通的（is_awaiting_pong 已经由 on_message 复位，或者还在正常范围内）
-            # 但是业务数据已经很久没更新了
             if not self.is_awaiting_pong and time_since_last_data > 5.0:
                 if current_time - self.last_quiet_log_time > 5.0:
-                    #logging.info(f"Status: Connection alive (Pong OK), but no market data received for {time_since_last_data:.1f}s. (Likely market inactive)")
                     self.last_quiet_log_time = current_time
 
     def on_message(self, _ws, message):
-        # 只要有任何字节进来，说明 TCP 链路是通的
         self.last_response_time = time.time()
         
         if message == "Websocket connection established.":
             return
         
         try:
-            ws_msg: WsMsg = json.loads(message)
+            ws_msg: WsMsgType = json.loads(message)
         except json.JSONDecodeError:
             return
 
         identifier = ws_msg_to_identifier(ws_msg)
         
-        # 如果收到 Pong
         if identifier == "pong":
-            logging.debug("Websocket received pong (link active).")
-            self.is_awaiting_pong = False # 解除等待状态，确认连接活着
+            logger.debug("Websocket received pong (link active).")
+            self.is_awaiting_pong = False 
             return
             
         if identifier is None:
             return
 
-        # --- 核心逻辑：能走到这里说明收到了实际业务数据 ---
         self.last_data_time = time.time()
-        self.is_awaiting_pong = False # 收到数据也说明连接活着，自动解除 Ping 等待
+        self.is_awaiting_pong = False 
         
         with self.lock:
             active_subscriptions = self.active_subscriptions[identifier]
@@ -229,12 +206,10 @@ class WebsocketManager(threading.Thread):
             try:
                 active_subscription.callback(ws_msg)
             except Exception as e:
-                logging.error(f"Callback error: {e}")
-
-    # --- 以下是基础辅助函数，保持原样或补全 ---
+                logger.error(f"Callback error: {e}")
 
     def on_open(self, _ws):
-        logging.debug("on_open: Connection established")
+        logger.debug("on_open: Connection established")
         self.ws_ready = True
         self.current_reconnect_delay = self.initial_reconnect_delay
         now = time.time()
@@ -245,17 +220,17 @@ class WebsocketManager(threading.Thread):
                 self._safe_send(json.dumps({"method": "subscribe", "subscription": subscription}))
 
     def on_error(self, _ws, error):
-        logging.error(f"Websocket error: {error}")
+        logger.error(f"Websocket error: {error}")
 
     def on_close(self, _ws, code, msg):
-        logging.info(f"Websocket closed. Code: {code}")
+        logger.info(f"Websocket closed. Code: {code}")
 
     def _safe_send(self, data):
         try:
-            if self.ws and self.ws.sock and self.ws.sock.connected:
+            if self.ws and self.ws.sock:
                 self.ws.send(data)
         except Exception as e:
-            logging.error(f"Send error: {e}")
+            logger.error(f"Send error: {e}")
             
     def _send_ping_payload(self):
         self._safe_send(json.dumps({"method": "ping"}))

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import threading
 import sys
 import time
@@ -13,21 +12,22 @@ from typing import Dict, List, Any, Optional, Union
 
 import requests
 
-from src.raw_data_schemas import HyperliquidProcessedSnapshot, HyperliquidProcessedTrade
+from lob_data_engine.raw.schemas import HyperliquidProcessedSnapshot, HyperliquidProcessedTrade
+from lob_data_engine.logging.factory import get_logger
 
 try:
     from . import config
     from .utils.writer import ParquetWriter
     from .websocket_manager import WebsocketManager
+    from .utils.types import Subscription, WsMsg
 except ImportError:
     import config
     from utils.writer import ParquetWriter
     from websocket_manager import WebsocketManager
-
-from hyperliquid_listener.utils.types import Subscription, WsMsg
+    from utils.types import Subscription, WsMsg
 
 # Logger configuration
-logger = logging.getLogger("hyperliquid_listener")
+logger = get_logger(name="main", exchange="Hyperliquid")
 
 class HyperliquidListener:
     exchange: str = "Hyperliquid"
