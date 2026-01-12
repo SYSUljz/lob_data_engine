@@ -225,7 +225,7 @@ class HyperliquidListener:
                 logger.info(f"Triggering daily processing for {prev_date}...")
                 try:
                     subprocess.Popen(
-                        [sys.executable, "src/process/process_lob.py", "--date", prev_date, "--sync"],
+                        [sys.executable, "src/process/process_lob.py", "--date", prev_date],
                         cwd=os.getcwd(),
                     )
                 except Exception as e:
