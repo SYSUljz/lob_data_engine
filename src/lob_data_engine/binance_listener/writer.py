@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import os
 from datetime import datetime
 from typing import Any, Dict, List, Union
@@ -10,11 +9,10 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from src.raw_data_schemas import BinanceTrade, BinanceDiff, BinanceSnapshot
+from lob_data_engine.raw.schemas import BinanceTrade, BinanceDiff, BinanceSnapshot, BinanceData
+from lob_data_engine.logging.factory import get_logger
 
-logger = logging.getLogger(__name__)
-
-BinanceData = Union[BinanceTrade, BinanceDiff, BinanceSnapshot]
+logger = get_logger("writer", "Binance")
 
 class ParquetWriter:
     def __init__(self, output_dir: str, flush_interval_seconds: int = 60, batch_size: int = 10000):

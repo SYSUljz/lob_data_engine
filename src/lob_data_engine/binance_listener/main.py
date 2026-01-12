@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import threading
 import sys
 import time
@@ -12,28 +11,22 @@ import websockets
 from websockets.exceptions import ConnectionClosed
 import requests
 
-from src.raw_data_schemas import BinanceTrade, BinanceDiff, BinanceSnapshot
+from lob_data_engine.raw.schemas import BinanceTrade, BinanceDiff, BinanceSnapshot
+from lob_data_engine.logging.factory import get_logger
 
 try:
     from . import config
     from .writer import ParquetWriter
-    from .orderbook import LocalOrderBook, GapDetectedError
+    from .orderbook import StreamSequenceVerifier, GapDetectedError
+    from .websocket_manager import WebSocketManager
 except ImportError:
     import config
     from writer import ParquetWriter
-    from orderbook import LocalOrderBook, GapDetectedError
+    from orderbook import StreamSequenceVerifier, GapDetectedError
+    from websocket_manager import WebSocketManager
 
-# Logger configuration is now assumed to be handled by the Manager or globally,
-# but we can keep a module-level logger.
-logger = logging.getLogger("binance_listener")
-
-async def fetch_snapshot(symbol: str) -> Dict[str, Any]:
-    """
-    Fetches the REST snapshot for a given symbol.
-    Runs in a separate thread to avoid blocking the asyncio loop.
-    """
-    url = f"https://api.binance.com/api/v3/depth?symbol={symbol.upper()}&limit=1000"
-    return await asyncio.to_thread(lambda: requests.get(url).json())
+# Logger configuration
+logger = get_logger("listener", "Binance")
 
 class BinanceListener:
     exchange: str = "Binance"
@@ -43,6 +36,7 @@ class BinanceListener:
         self._stop_event: Optional[asyncio.Event] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self.writer: Optional[ParquetWriter] = None
+        self.ws_manager: Optional[WebSocketManager] = None
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -65,6 +59,33 @@ class BinanceListener:
     def is_alive(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
 
+    def _fetch_snapshot_sync(self, symbol: str) -> Optional[Dict[str, Any]]:
+        try:
+            # Default limit 1000 to get a deep book for snapshot
+            url = "https://api.binance.com/api/v3/depth"
+            params = {"symbol": symbol.upper(), "limit": 1000}
+            response = requests.get(url, params=params, timeout=5)
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            logger.error(f"Snapshot HTTP request failed for {symbol}: {e}")
+            return None
+
+    async def _fetch_and_save_snapshot(self, symbol: str):
+        snapshot = await asyncio.to_thread(self._fetch_snapshot_sync, symbol)
+        if snapshot:
+            # Inject metadata
+            timestamp_ms = int(time.time() * 1000)
+            snapshot["e"] = "depthSnapshot"
+            snapshot["E"] = timestamp_ms
+            snapshot["s"] = symbol
+            snapshot["local_time"] = time.time()
+            snapshot["is_revalidation"] = False # Flag for downstream if needed
+            
+            if self.writer:
+                await self.writer.add_data(snapshot)
+                logger.info(f"[{symbol}] Snapshot saved. lastUpdateId={snapshot.get('lastUpdateId')}")
+
     def _run_thread(self):
         try:
             asyncio.run(self._run_async())
@@ -78,8 +99,7 @@ class BinanceListener:
         # 1. Setup Configuration
         target_coins = config.TARGET_COINS
         
-        lobs: Dict[str, LocalOrderBook] = {c: LocalOrderBook(c) for c in target_coins}
-        msg_buffers: Dict[str, List[Dict]] = {c: [] for c in target_coins}
+        verifiers: Dict[str, StreamSequenceVerifier] = {c: StreamSequenceVerifier(c) for c in target_coins}
         
         streams = []
         for coin in target_coins:
@@ -103,145 +123,90 @@ class BinanceListener:
         )
         await self.writer.start()
 
+        # 3. Initialize WebSocketManager
         ws_url = "wss://stream.binance.com:9443/stream"
-
-        # --- Helper Functions ---
-        async def perform_snapshot_sync(coin: str, is_revalidation: bool = False):
+        
+        # Calculate timeout based on DEPTH_SPEED (e.g. "100ms" -> 0.1s). Timeout = 2 * interval
+        speed_str = str(config.DEPTH_SPEED)
+        interval_sec = 0.1 # Default
+        if speed_str.endswith("ms"):
             try:
-                if is_revalidation:
-                    logger.info(f"[{coin}] Starting periodic validation. Pausing updates...")
-                    lobs[coin].initialized = False
-                
-                # logger.info(f"[{coin}] Fetching REST snapshot...")
-                snapshot_data = await fetch_snapshot(coin)
-                
-                if "lastUpdateId" not in snapshot_data:
-                    logger.error(f"[{coin}] Invalid snapshot data: {snapshot_data}")
-                    return
+                interval_sec = int(speed_str[:-2]) / 1000.0
+            except ValueError:
+                pass
+        
+        reconnect_timeout = interval_sec * 10.0
+        
+        self.ws_manager = WebSocketManager(ws_url, timeout=reconnect_timeout)
+        self.ws_manager.subscribe(streams)
 
-                if is_revalidation:
-                    old_state = lobs[coin].get_best_prices()
-                    new_bid = float(snapshot_data["bids"][0][0]) if snapshot_data["bids"] else None
-                    new_ask = float(snapshot_data["asks"][0][0]) if snapshot_data["asks"] else None
-                    new_id = snapshot_data["lastUpdateId"]
-                    
-                    logger.info(f"[{coin}] Consistency Check: Local(ID={old_state['lastUpdateId']}) Remote(ID={new_id})")
-
-                snapshot_event = {
-                    "e": "depthSnapshot",
-                    "E": int(time.time() * 1000),
-                    "s": coin,
-                    "lastUpdateId": snapshot_data["lastUpdateId"],
-                    "bids": snapshot_data.get("bids", []),
-                    "asks": snapshot_data.get("asks", []),
-                    "local_time": time.time(),
-                    "is_revalidation": is_revalidation
-                }
-                await self.writer.add_data(snapshot_event)
-
-                lobs[coin].set_snapshot(snapshot_data)
-
-                buffer_len = len(msg_buffers[coin])
-                applied_count = 0
-                for buffered_msg in msg_buffers[coin]:
-                    if lobs[coin].apply_update(buffered_msg):
-                        applied_count += 1
-                
-                logger.info(f"[{coin}] Synced. Replayed {applied_count}/{buffer_len} buffered msgs.")
-                msg_buffers[coin] = []
-
-            except Exception as e:
-                logger.error(f"[{coin}] Snapshot sync failed: {e}")
-
-        async def manage_initial_snapshots():
-            await asyncio.sleep(1)
-            for coin in target_coins:
-                if self._stop_event.is_set(): break
-                await perform_snapshot_sync(coin, is_revalidation=False)
-
-        async def periodic_validation_task():
-            while not self._stop_event.is_set():
-                try:
-                    await asyncio.wait_for(self._stop_event.wait(), timeout=config.VALIDATION_INTERVAL)
-                    # If we woke up because stop_event is set, break
-                    if self._stop_event.is_set(): break
-                except asyncio.TimeoutError:
-                    pass # Timeout means it's time to run validation
-
-                if self._stop_event.is_set(): break
-                
-                logger.info("--- Starting Periodic Consistency Check ---")
-                for coin in target_coins:
-                    if self._stop_event.is_set(): break
-                    await perform_snapshot_sync(coin, is_revalidation=True)
-                logger.info("--- Consistency Check Complete ---")
-
-        # --- Main Loop ---
-        while not self._stop_event.is_set():
+        # 4. Define Message Processing Callback
+        async def process_message(msg: Dict[str, Any]):
             try:
-                logger.info(f"Connecting to {ws_url}...")
-                async with websockets.connect(ws_url, ping_interval=None, max_queue=10000) as ws:
-                    logger.info("Connected.")
-                    
-                    subscribe_msg = {
-                        "method": "SUBSCRIBE",
-                        "params": streams,
-                        "id": 1
-                    }
-                    await ws.send(json.dumps(subscribe_msg))
-                    logger.info("Sent subscription request.")
+                # Expecting combined stream format: {"stream": "...", "data": {...}}
+                if "stream" in msg and "data" in msg:
+                    data = msg["data"]
+                    if isinstance(data, dict):
+                        data['local_time'] = time.time()
+                        
+                        # Write data
+                        if self.writer:
+                            await self.writer.add_data(data)
 
-                    snapshot_task = asyncio.create_task(manage_initial_snapshots())
-                    validation_task = asyncio.create_task(periodic_validation_task())
+                        # Sequence Verification
+                        event_type = data.get("e")
+                        symbol = data.get("s")
 
-                    try:
-                        while not self._stop_event.is_set():
+                        if event_type == "depthUpdate" and symbol in verifiers:
                             try:
-                                msg_raw = await asyncio.wait_for(ws.recv(), timeout=1.0)
-                                msg = json.loads(msg_raw)
-                                
-                                if "stream" in msg and "data" in msg:
-                                    data = msg["data"]
-                                    if isinstance(data, dict):
-                                        data['local_time'] = time.time()
-                                        await self.writer.add_data(data)
-
-                                        event_type = data.get("e")
-                                        symbol = data.get("s")
-
-                                        if event_type == "depthUpdate" and symbol in lobs:
-                                            if lobs[symbol].initialized:
-                                                try:
-                                                    lobs[symbol].apply_update(data)
-                                                except GapDetectedError as e:
-                                                    logger.error(f"[{symbol}] Gap: {e}. Recovering...")
-                                                    lobs[symbol].initialized = False
-                                                    asyncio.create_task(perform_snapshot_sync(symbol))
-                                            else:
-                                                msg_buffers[symbol].append(data)
-
-                            except asyncio.TimeoutError:
-                                continue
-                            except ConnectionClosed:
-                                logger.warning("Connection closed by server.")
-                                break
-                            except Exception as e:
-                                logger.error(f"Error processing message: {e}")
-                                continue
-                    finally:
-                        snapshot_task.cancel()
-                        validation_task.cancel()
-                        try: await snapshot_task 
-                        except: pass
-                        try: await validation_task
-                        except: pass
-
+                                verifiers[symbol].process_update(data)
+                            except GapDetectedError as e:
+                                logger.error(f"[{symbol}] Gap: {e}. Resetting sequence tracking and fetching snapshot...")
+                                verifiers[symbol].last_update_id = None
+                                # Trigger snapshot fetch to re-sync
+                                asyncio.create_task(self._fetch_and_save_snapshot(symbol))
             except Exception as e:
-                logger.error(f"Connection error: {e}")
-                if not self._stop_event.is_set():
-                    await asyncio.sleep(5)
+                logger.error(f"Error in process_message: {e}")
 
-        if self.writer:
-            await self.writer.stop()
-        logger.info("BinanceListener stopped.")
+        self.ws_manager.add_callback(process_message)
 
+        # 5. Start Manager & Wait
+        manager_task = asyncio.create_task(self.ws_manager.run())
+        
+        # Wait for WS connection to be established
+        logger.info("Waiting for WebSocket connection...")
+        while not self.ws_manager.is_connected and not self._stop_event.is_set():
+            await asyncio.sleep(0.1)
+
+        if not self._stop_event.is_set():
+            logger.info("WebSocket connected. Waiting 2s for buffering...")
+            await asyncio.sleep(2.0)
+            
+            # Fetch initial snapshots to ensure we can link diff stream (U <= lastUpdateId + 1 <= u)
+            logger.info("Fetching initial snapshots...")
+            for coin in target_coins:
+                asyncio.create_task(self._fetch_and_save_snapshot(coin))
+        
+        try:
+            # Wait until stopped
+            await self._stop_event.wait()
+        except asyncio.CancelledError:
+            pass
+        finally:
+            logger.info("Stopping BinanceListener...")
+            # Shutdown sequence
+            if self.ws_manager:
+                await self.ws_manager.stop()
+            
+            # Wait for manager to finish
+            try:
+                await asyncio.wait_for(manager_task, timeout=2.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                pass
+            except Exception as e:
+                logger.error(f"Error stopping manager task: {e}")
+
+            if self.writer:
+                await self.writer.stop()
+            
+            logger.info("BinanceListener stopped.")
