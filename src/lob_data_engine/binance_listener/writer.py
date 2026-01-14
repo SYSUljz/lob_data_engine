@@ -84,9 +84,6 @@ class ParquetWriter:
 
             df = pd.DataFrame(data)
             
-            now = datetime.utcnow()
-            date_str = now.strftime("%Y-%m-%d")
-            
             # Check if we have the expected columns from Binance (s=symbol, e=event)
             # If not (e.g. unknown message), we might need a fallback.
             if "s" in df.columns and "e" in df.columns:
@@ -94,6 +91,18 @@ class ParquetWriter:
                 groups = df.groupby(["s", "e"])
 
                 for (symbol, event_type), group_df in groups:
+                    # Use 'E' (event time) if available for naming and directory
+                    if "E" in group_df.columns:
+                        min_e = group_df["E"].min()
+                        # Binance E is in milliseconds, using UTC for consistency
+                        dt = datetime.utcfromtimestamp(min_e / 1000.0)
+                        date_str = dt.strftime("%Y-%m-%d")
+                        timestamp_ms = int(min_e)
+                    else:
+                        now = datetime.utcnow()
+                        date_str = now.strftime("%Y-%m-%d")
+                        timestamp_ms = int(now.timestamp() * 1000)
+
                     # Safe coin name for path
                     coin_clean = str(symbol).upper().replace("/", "_")
                     
@@ -104,7 +113,7 @@ class ParquetWriter:
                     
                     os.makedirs(target_dir, exist_ok=True)
                     
-                    filename = f"{event_type}_{int(now.timestamp() * 1000)}.parquet"
+                    filename = f"{event_type}_{timestamp_ms}.parquet"
                     file_path = os.path.join(target_dir, filename)
                     
                     # PyArrow handles nested lists (like 'b' and 'a') well usually.
@@ -114,6 +123,8 @@ class ParquetWriter:
                 logger.info(f"Flushed {len(data)} records for keys: {list(groups.groups.keys())}")
             else:
                 # Fallback if no symbol/event column
+                now = datetime.utcnow()
+                date_str = now.strftime("%Y-%m-%d")
                 target_dir = os.path.join(self.output_dir, date_str, "unknown")
                 os.makedirs(target_dir, exist_ok=True)
                 filename = f"raw_{int(now.timestamp() * 1000)}.parquet"
