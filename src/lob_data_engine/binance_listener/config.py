@@ -16,10 +16,10 @@ BATCH_SIZE = 10000
 DEPTH_SPEED = "100ms"
 
 # Stream type: 'diff' (incremental updates, default) or 'partial' (top N snapshot)
-DEPTH_STREAM_TYPE = "diff" 
+DEPTH_STREAM_TYPE = "partial" 
 
 # Levels for partial stream (5, 10, 20). Ignored if DEPTH_STREAM_TYPE is 'diff'
-#DEPTH_LEVELS = 20
+DEPTH_LEVELS = 20
 
 # Interval to fetch full snapshot and validate/resync local order book (seconds)
 # Default: 3600 (1 hour)

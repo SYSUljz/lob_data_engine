@@ -58,6 +58,20 @@ class BinanceTrade(TypedDict):
     M: bool
     local_time: Optional[float]
 
+class BinancePerpTrade(TypedDict):
+    """
+    Trade Message for Binance Perpetual Futures.
+    """
+    e: Literal["trade"]
+    E: int
+    s: str
+    t: int
+    p: str
+    q: str
+    T: int
+    m: bool
+    local_time: Optional[float]
+
 class BinanceDiff(TypedDict):
     """
     Depth Update (Diff) for Binance.
@@ -85,4 +99,14 @@ class BinanceSnapshot(TypedDict):
     local_time: float
     is_revalidation: bool
 
-BinanceData = Union[BinanceTrade, BinanceDiff, BinanceSnapshot]
+class BinanceForceOrder(TypedDict):
+    """
+    Force Liquidation Order for Binance Perpetual Futures.
+    """
+    e: Literal["forceOrder"]
+    E: int
+    o: dict  # Nested order details
+    local_time: Optional[float]
+    s: Optional[str] # Extracted symbol for convenience
+
+BinanceData = Union[BinanceTrade, BinancePerpTrade, BinanceDiff, BinanceSnapshot, BinanceForceOrder]

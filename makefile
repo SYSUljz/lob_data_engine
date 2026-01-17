@@ -4,8 +4,10 @@ SHELL := /bin/bash
 # Define the path to your Conda environment for clarity
 CONDA_ENV_PREFIX := /home/jack_li/python/LOB_research/.conda
 PYTHON_MODULE := hyperliquid.main
+BINANCE_SCRIPT := src/start_binance.py
+BINANCE_PERP_SCRIPT := src/start_binance_perp.py
 
-.PHONY: run start stop process_day
+.PHONY: run start stop process_day start-binance stop-binance start-binance-perp stop-binance-perp status start-all stop-all
 
 # --- Foreground Execution ---
 # Runs the module directly in the foreground.
@@ -29,6 +31,39 @@ stop:
 	@echo "Attempting to stop LOB research process..."
 	# Search for the Python process running the specific module
 	pkill -f "python -m $(PYTHON_MODULE)" || echo "Process not found or already stopped."
+
+# --- Binance Spot ---
+start-binance:
+	@echo "Starting Binance Spot listener..."
+	nohup /bin/bash -c 'source $$(conda info --base)/etc/profile.d/conda.sh && conda activate $(CONDA_ENV_PREFIX) && python $(BINANCE_SCRIPT)' > /dev/null 2>&1 &
+
+stop-binance:
+	@echo "Stopping Binance Spot listener..."
+	pkill -f "python $(BINANCE_SCRIPT)" || echo "Binance Spot process not found."
+
+# --- Binance Perp ---
+start-binance-perp:
+	@echo "Starting Binance Perp listener..."
+	nohup /bin/bash -c 'source $$(conda info --base)/etc/profile.d/conda.sh && conda activate $(CONDA_ENV_PREFIX) && python $(BINANCE_PERP_SCRIPT)' > /dev/null 2>&1 &
+
+stop-binance-perp:
+	@echo "Stopping Binance Perp listener..."
+	pkill -f "python $(BINANCE_PERP_SCRIPT)" || echo "Binance Perp process not found."
+
+# --- All Processes ---
+start-all: start-binance start-binance-perp
+	@echo "All listeners started."
+
+stop-all: stop-binance stop-binance-perp
+	@echo "All listeners stopped."
+
+# --- Status Check ---
+status:
+	@echo "Checking process status..."
+	@if pgrep -f "[p]ython $(BINANCE_SCRIPT)" > /dev/null; then echo "✅ Binance Spot is RUNNING"; else echo "❌ Binance Spot is STOPPED"; fi
+	@if pgrep -f "[p]ython $(BINANCE_PERP_SCRIPT)" > /dev/null; then echo "✅ Binance Perp is RUNNING"; else echo "❌ Binance Perp is STOPPED"; fi
+	@if pgrep -f "[p]ython -m $(PYTHON_MODULE)" > /dev/null; then echo "✅ Hyperliquid (main) is RUNNING"; else echo "❌ Hyperliquid (main) is STOPPED"; fi
+
 
 # --- Manual Processing Task ---
 # Merges parquet files and syncs to cloud.
