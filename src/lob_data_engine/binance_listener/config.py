@@ -24,3 +24,7 @@ DEPTH_LEVELS = 20
 # Interval to fetch full snapshot and validate/resync local order book (seconds)
 # Default: 3600 (1 hour)
 VALIDATION_INTERVAL = 3600
+
+# Channel Subscription Toggles
+ENABLE_TRADE = False
+ENABLE_AGGTRADE = False

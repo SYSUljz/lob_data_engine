@@ -11,7 +11,7 @@ import websockets
 from websockets.exceptions import ConnectionClosed
 import requests
 
-from lob_data_engine.raw.schemas import BinanceTrade, BinanceDiff, BinanceSnapshot
+from lob_data_engine.raw.schemas import BinanceTrade, BinanceDiff, BinanceSnapshot, BinancePartialDepth
 from lob_data_engine.logging.factory import get_logger
 
 try:
@@ -110,7 +110,11 @@ class BinanceListener:
             else:
                 streams.append(f"{c}@depth@{config.DEPTH_SPEED}")
                 
-            streams.append(f"{c}@trade")
+            if getattr(config, 'ENABLE_AGGTRADE', True):
+                streams.append(f"{c}@aggTrade")
+
+            if getattr(config, 'ENABLE_TRADE', False):
+                streams.append(f"{c}@trade")
 
         logger.info(f"Target Coins: {target_coins}")
         logger.info(f"Streams to subscribe: {streams}")
@@ -145,9 +149,21 @@ class BinanceListener:
             try:
                 # Expecting combined stream format: {"stream": "...", "data": {...}}
                 if "stream" in msg and "data" in msg:
+                    stream_name = msg["stream"]
                     data = msg["data"]
                     if isinstance(data, dict):
                         data['local_time'] = time.time()
+                        
+                        # Handle Partial Depth Stream
+                        if "@depth" in stream_name:
+                            # Check if it's a partial depth stream (e.g., btcusdt@depth20@100ms)
+                            # Diff streams are btcusdt@depth@100ms
+                            is_partial = any(f"@depth{l}" in stream_name for l in ["5", "10", "20"])
+                            if is_partial:
+                                if "e" not in data or data.get("e") == "depthUpdate":
+                                    parts = stream_name.split("@")
+                                    data["s"] = parts[0].upper()
+                                    data["e"] = "depthPartial"
                         
                         # Write data
                         if self.writer:
