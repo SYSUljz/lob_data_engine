@@ -11,7 +11,6 @@ import websockets
 from websockets.exceptions import ConnectionClosed
 import requests
 
-from lob_data_engine.raw.schemas import BinanceTrade, BinanceDiff, BinanceSnapshot, BinancePartialDepth
 from lob_data_engine.logging.factory import get_logger
 
 try:
@@ -164,6 +163,8 @@ class BinanceListener:
                                     parts = stream_name.split("@")
                                     data["s"] = parts[0].upper()
                                     data["e"] = "depthPartial"
+                                    if "E" not in data:
+                                        data["E"] = int(time.time() * 1000)
                         
                         # Write data
                         if self.writer:
