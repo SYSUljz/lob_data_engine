@@ -44,6 +44,7 @@ HyperliquidData = Union[HyperliquidProcessedSnapshot, HyperliquidProcessedTrade]
 class BinanceTrade(TypedDict):
     """
     Trade Message for Binance.
+    continus check : t = t.shift(1) + 1
     """
     e: Literal["trade"]
     E: int
@@ -61,6 +62,7 @@ class BinanceTrade(TypedDict):
 class BinancePerpTrade(TypedDict):
     """
     Trade Message for Binance Perpetual Futures.
+    continus check : t = t.shift(1) + 1
     """
     e: Literal["trade"]
     E: int
@@ -109,4 +111,19 @@ class BinanceForceOrder(TypedDict):
     local_time: Optional[float]
     s: Optional[str] # Extracted symbol for convenience
 
-BinanceData = Union[BinanceTrade, BinancePerpTrade, BinanceDiff, BinanceSnapshot, BinanceForceOrder]
+class BinancePartialDepth(TypedDict):
+    """
+    Partial Book Depth for Binance (e.g. depth20).
+    """
+    lastUpdateId: int
+    bids: List[List[str]]
+    asks: List[List[str]]
+    local_time: Optional[float]
+    s: str
+    e: Literal["depthPartial"]
+    E: Optional[int]
+    U: Optional[int]
+    u: Optional[int]
+    pu: Optional[int]
+
+BinanceData = Union[BinanceTrade, BinancePerpTrade, BinanceDiff, BinanceSnapshot, BinanceForceOrder, BinancePartialDepth]

@@ -1,10 +1,6 @@
 from typing import Dict, Optional
 from lob_data_engine.logging.factory import get_logger
-
-try:
-    from messages import DepthUpdateMsg
-except ImportError:
-    from .messages import DepthUpdateMsg
+from lob_data_engine.raw.schemas import BinanceDiff
 
 
 class GapDetectedError(Exception):
@@ -17,7 +13,7 @@ class StreamSequenceVerifier:
         self.last_update_id: Optional[int] = None
         self.logger = get_logger("verifier", "BinancePerp", symbol)
 
-    def process_update(self, update_data: DepthUpdateMsg) -> bool:
+    def process_update(self, update_data: BinanceDiff) -> bool:
         """
         Check sequence of depthUpdate event.
         Returns True if sequence is valid.
