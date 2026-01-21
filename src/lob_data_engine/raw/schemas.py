@@ -114,6 +114,7 @@ class BinanceForceOrder(TypedDict):
 class BinancePartialDepth(TypedDict):
     """
     Partial Book Depth for Binance (e.g. depth20).
+    continus check : pu = u.shift(1) 
     """
     lastUpdateId: int
     bids: List[List[str]]

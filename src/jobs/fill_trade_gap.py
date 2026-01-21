@@ -240,7 +240,7 @@ class TradeGapFiller:
                 
                 # 6. Save Report
                 os.makedirs(self.trade_path / "filled/", exist_ok=True)
-                report_file = self.trade_path / "filled/gap_report.txt"
+                report_file = self.trade_path / "filled/gap_report.log"
                 with open(report_file, "w") as f:
                     f.write("📊 Trade Gap Fill Report\n")
                     f.write("="*30 + "\n")

@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+    #FIXME : vps data path should not define in config.json it makes managment complex
 
 def load_vps_config(config_path="vps_config.json"):
     """
@@ -32,7 +33,7 @@ def load_vps_config(config_path="vps_config.json"):
         print(f"⚠️ Configuration file '{config_path}' not found. Using internal defaults.")
         config = {
             "remote_alias": "vps",
-            "remote_base_path": "/root/lob_data_engine/data"
+            "remote_base_path": "/root/lob_data_engine/perp_data"
         }
         
     return config

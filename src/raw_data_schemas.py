@@ -82,3 +82,17 @@ class BinanceSnapshot(TypedDict):
     asks: List[List[str]]
     local_time: float
     is_revalidation: bool
+
+class BinancePartial(TypedDict):
+    """
+    Partial Depth Stream for Binance.
+    """
+    e: Literal["depthPartial"]
+    E: int
+    s: str
+    U: int
+    u: int
+    pu: int
+    b: List[List[str]]
+    a: List[List[str]]
+    local_time: Optional[float]

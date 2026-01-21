@@ -4,58 +4,63 @@ import glob
 import argparse
 import subprocess
 from datetime import datetime, timedelta
-def merge_parquet(folder, output_file):
+def merge_parquet(folder, output_file, exclude_filenames=None):
     files = glob.glob(os.path.join(folder, "*.parquet"))
     
-    if len(files) == 1 and os.path.basename(files[0])=='merged.parquet':
-        print(f'{folder} 只有一个 merged。')
+    # Exclude specific filenames if provided
+    if exclude_filenames:
+        files = [f for f in files if os.path.basename(f) not in exclude_filenames]
 
-        
-        return
     if not files:
-        print(f'{folder}未找到Parquet文件。')
+        print(f'{folder} No Parquet files found to merge (excluded files ignored).')
+        return
+
+    # Special check: If the only file remaining is the output file itself, 
+    # and we are intending to merge, we might want to skip if there's nothing NEW to add.
+    # The original code had: if len(files) == 1 and files[0] == 'merged.parquet': return
+    # Let's preserve similar logic.
+    if len(files) == 1 and os.path.abspath(files[0]) == os.path.abspath(output_file):
+        print(f'{folder} Only one merged (output) file exists, no new files to merge.')
         return
 
     dfs = []
-    # 如果输出文件也在这个文件夹里，需要避免把它自己也读进去（取决于你的文件名规则）
-    # 建议先过滤掉 output_file
     files = sorted(files)
     for f in files:
         try:
             df = pd.read_parquet(f)
             dfs.append(df)
         except Exception as e:
-            print(f"跳过损坏文件: {f}, 错误: {e}")
+            print(f"Skipping corrupted file: {f}, Error: {e}")
     
     if not dfs:
-        print("没有有效的数据被读取。")
+        print("No valid data read.")
         return
 
-    # 合并数据
+    # Merge data
     df_merged = pd.concat(dfs, axis=0, ignore_index=True)
     df_merged = df_merged.dropna(axis=1, how='all')
 
     # ---------------------------------------------------------
-    # 关键修改：步骤 1 - 先尝试保存文件
+    # Critical change: Step 1 - Attempt to save file first
     # ---------------------------------------------------------
     try:
         df_merged.to_parquet(output_file)
-        print(f"合并成功，文件已保存至: {output_file}")
+        print(f"Merge successful, file saved to: {output_file}")
         
         # -----------------------------------------------------
-        # 关键修改：步骤 2 - 保存成功后，不删除源文件
+        # Critical change: Step 2 - Delete source files after successful save
         # -----------------------------------------------------
         if output_file in files:
             files.remove(output_file)
         for f in files:
             try:
                 os.remove(f)
-                print(f"已删除源文件: {f}")
+                print(f"Deleted source file: {f}")
             except OSError as e:
-                print(f"无法删除文件 {f}: {e}")
+                print(f"Could not delete file {f}: {e}")
                 
-        print("全部完成。")
+        print("All done.")
         
     except Exception as e:
-        # 如果保存失败，打印错误，并且绝对不要删除源文件
-        print(f"!!! 保存失败 !!! 源文件未被删除。错误信息: {e}")
+        # If save fails, print error and DO NOT delete source files
+        print(f"!!! Save failed !!! Source files were not deleted. Error: {e}")
