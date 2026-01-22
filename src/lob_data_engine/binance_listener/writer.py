@@ -9,7 +9,6 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from lob_data_engine.raw.schemas import BinanceTrade, BinanceDiff, BinanceSnapshot, BinanceData
 from lob_data_engine.logging.factory import get_logger
 
 logger = get_logger("writer", "Binance")
@@ -19,7 +18,7 @@ class ParquetWriter:
         self.output_dir = output_dir
         self.flush_interval_seconds = flush_interval_seconds
         self.batch_size = batch_size
-        self.queue: asyncio.Queue[BinanceData] = asyncio.Queue()
+        self.queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue()
         self._running = False
         self._process_task: asyncio.Task | None = None
 
@@ -34,11 +33,11 @@ class ParquetWriter:
         if self._process_task:
             await self._process_task
 
-    async def add_data(self, data: BinanceData):
+    async def add_data(self, data: Dict[str, Any]):
         await self.queue.put(data)
 
     async def _process_queue(self):
-        buffer: List[BinanceData] = []
+        buffer: List[Dict[str, Any]] = []
         last_flush_time = datetime.now().timestamp()
 
         while self._running or not self.queue.empty():
@@ -92,13 +91,16 @@ class ParquetWriter:
 
                 for (symbol, event_type), group_df in groups:
                     # Use 'E' (event time) if available for naming and directory
+                    timestamp_ms = None
                     if "E" in group_df.columns:
                         min_e = group_df["E"].min()
-                        # Binance E is in milliseconds, using UTC for consistency
-                        dt = datetime.utcfromtimestamp(min_e / 1000.0)
-                        date_str = dt.strftime("%Y-%m-%d")
-                        timestamp_ms = int(min_e)
-                    else:
+                        if pd.notna(min_e):
+                            # Binance E is in milliseconds, using UTC for consistency
+                            timestamp_ms = int(min_e)
+                            dt = datetime.utcfromtimestamp(timestamp_ms / 1000.0)
+                            date_str = dt.strftime("%Y-%m-%d")
+
+                    if timestamp_ms is None:
                         now = datetime.utcnow()
                         date_str = now.strftime("%Y-%m-%d")
                         timestamp_ms = int(now.timestamp() * 1000)
