@@ -5,7 +5,7 @@ SHELL := /bin/bash
 CONDA_ENV_PREFIX := /home/jack_li/python/LOB_research/.conda
 PYTHON_MODULE := hyperliquid.main
 BINANCE_SCRIPT := src/start_binance.py
-BINANCE_PERP_SCRIPT := src/start_binance_perp.py
+BINANCE_PERP_SCRIPT := scripts/start_binance_perp.py
 
 .PHONY: run start stop process_day start-binance stop-binance start-binance-perp stop-binance-perp status start-all stop-all
 

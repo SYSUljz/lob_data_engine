@@ -1,45 +1,78 @@
-# Hyperliquid LOB Data Collector
+# LOB Data Engine
 
-This project collects Level 2 Order Book (L2Book) data for BTC, ETH, and SOL (both Perpetual and Spot markets) from Hyperliquid's WebSocket API and saves it to Parquet files.
+A high-performance, production-ready system for collecting, processing, and managing Limit Order Book (LOB) and trade data from major cryptocurrency exchanges (Binance, Hyperliquid).
 
 ## Features
-- Real-time L2Book monitoring.
-- Robust WebSocket connection with automatic reconnection and heartbeats.
-- Efficient data storage using Parquet (batched writes, snappy compression).
-- Handles network jitter/disconnections gracefully.
+
+- **Real-time Data Collection**: Low-latency WebSocket listeners for Binance (Spot & Perp) and Hyperliquid.
+- **Robustness**: Automatic reconnection, heartbeat monitoring, and VPS-based redundancy.
+- **Data Persistence**: Efficient storage using Parquet with Snappy compression.
+- **Historical Data**: Tools to download and process historical data from official sources.
+- **Data Integrity**: Automated job system to fill local data gaps using remote VPS logs.
+- **Processing Pipeline**: Labeling, sampling, and feature extraction for machine learning.
 
 ## Installation
 
-1. Ensure you have Python 3.9+ installed.
-2. Install dependencies:
+Prerequisites: Python 3.9+
 
 ```bash
-cd fetch_data
+# Clone the repository
+git clone <repository_url>
+cd lob_data_engine
+
+# Install dependencies
 pip install -e .
 ```
 
-## Usage
-
-Run the collector:
+## Quick Start
+### 1. Real-time Collection
+Start the listeners using the provided scripts:
 
 ```bash
-python -m lob_research.main
+# Start Binance Perpetual listener
+python scripts/start_binance_perp.py
+
+# Start all listeners
+python scripts/start_listeners.py
+```
+
+### 2. Historical Data
+Download historical data using the loader module:
+```bash
+# Example usage (adjust command based on implementation)
+python -m lob_data_engine.historical_loader.main --symbol BTCUSDT --date 2024-01-01
+```
+
+### 3. Gap Filling (Data Repair)
+If local data is missing (due to network issues), use the gap filler job to sync with your VPS:
+
+```bash
+python -m lob_data_engine.jobs.fill_gap /path/to/local/data --remote_alias vps
+```
+
+## Project Structure
+
+```
+lob_data_engine/
+├── lob_data_engine/       # Main package
+│   ├── binance_listener/  # Binance Spot listener
+│   ├── binance_perp_listener/ # Binance Perp listener
+│   ├── hyperliquid_listener/ # Hyperliquid listener
+│   ├── historical_loader/ # Historical data downloader
+│   ├── jobs/              # Data maintenance jobs (gap filling)
+│   ├── process/           # Data processing & labeling
+│   ├── manager.py         # WebSocket manager
+│   └── schemas.py         # Data schemas
+├── scripts/               # Entry point scripts
+├── tests/                 # Unit tests
+├── utils/                 # Utility scripts
+└── pyproject.toml         # Project configuration
 ```
 
 ## Configuration
 
-Configuration variables are available in `src/lob_research/config.py`.
-- `TARGET_COINS`: List of coins to monitor (default: BTC, ETH, SOL).
-- `DATA_DIR`: Output directory for Parquet files.
-- `FLUSH_INTERVAL`: Time in seconds between disk writes.
+Configuration is managed via `config.py` files within modules or `vps_config.json` for remote settings. Ensure `vps_config.json` is properly set up for gap filling.
 
-## Output
+## License
 
-Data is saved to `data/{YYYY-MM-DD}/l2book_{timestamp}.parquet`.
-Columns:
-- `coin`: Token symbol (e.g., "BTC").
-- `channel`: "l2Book".
-- `exchange_time`: Timestamp from the exchange.
-- `local_time`: Local receipt timestamp.
-- `bids`: List of bid levels `[{px, sz, n}, ...]`.
-- `asks`: List of ask levels.
+MIT License

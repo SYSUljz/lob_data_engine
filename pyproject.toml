@@ -1,7 +1,11 @@
 [project]
-name = "lob_research"
-version = "0.1.0"
-description = "Hyperliquid LOB Data Collector"
+name = "lob_data_engine"
+version = "0.2.0"
+description = "High-performance LOB data collection and processing engine"
+authors = [
+    {name = "Your Name", email = "your.email@example.com"},
+]
+readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
     "websockets>=12.0",
@@ -13,8 +17,21 @@ dependencies = [
     "eth-account>=0.8.0",
     "msgpack>=1.0.0",
     "eth-utils>=2.0.0",
+    "fastparquet>=2023.10.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "black",
+    "isort",
+    "flake8"
 ]
 
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["lob_data_engine*"]
+exclude = ["tests*", "scripts*", "utils*"]

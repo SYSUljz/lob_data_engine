@@ -1,4 +1,4 @@
-from ws_manager import WSListenerManager
+from lob_data_engine.manager import WSListenerManager
 from lob_data_engine.binance_perp_listener import BinancePerpListener
 
 def main():

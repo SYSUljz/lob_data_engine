@@ -1,4 +1,4 @@
-from ws_manager import WSListenerManager
+from lob_data_engine.manager import WSListenerManager
 from lob_data_engine.binance_listener import BinanceListener
 from lob_data_engine.hyperliquid_listener import HyperliquidListener
 

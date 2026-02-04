@@ -6,24 +6,18 @@ import sys
 from pathlib import Path
 import argparse
 
-# Allow importing from sibling modules
+import sys
+import os
+
+# Add project root to sys.path if not present, to allow imports
 current_dir = os.path.dirname(os.path.abspath(__file__))
-parent_dir = os.path.dirname(current_dir) # src/
-root_dir = os.path.dirname(parent_dir) # root
-sys.path.append(root_dir)
+# .../lob_data_engine/jobs -> project_root (parent of lob_data_engine)
+project_root = os.path.dirname(os.path.dirname(current_dir))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
-try:
-    from src.jobs.merge_parquet import merge_parquet
-except ImportError:
-    # Fallback if running from a different context
-    sys.path.append(os.path.join(root_dir, 'src', 'jobs'))
-    from merge_parquet import merge_parquet
-
-try:
-    from src.jobs.config import load_vps_config
-except ImportError:
-    sys.path.append(os.path.join(root_dir, 'src', 'jobs'))
-    from config import load_vps_config
+from lob_data_engine.jobs.merge_parquet import merge_parquet
+from lob_data_engine.jobs.config import load_vps_config
 
 class TradeGapFiller:
     def __init__(self, data_path: str, remote_alias: str = None, remote_base_path: str = None):
