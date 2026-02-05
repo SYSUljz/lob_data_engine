@@ -14,6 +14,7 @@ The pipeline transforms raw tick-level trade data into aggregated Volume Bars, e
     - **Signature Transform (Intra-Bar)**: Captures the shape of the Price-CVD path *within* each bar using `iisignature`.
     - **Rolling Signature Transform (Inter-Bar)**: Captures temporal dynamics across a sliding window of bars.
 - **Clustering-based Labeling**: Uses K-Means to identify distinct market regimes (Strong/Weak Buy/Sell) dynamically.
+- **HMM Market Regime Classification**: Uses Hidden Markov Models to classify market states (e.g., Low/High Volatility) based on Returns, Volatility, and Volume Imbalance.
 
 ## Directory Structure
 
@@ -28,6 +29,7 @@ modeling/
     ├── features.py         # Feature engineering (FFD, Lags, Rolling Sig)
     ├── labeling.py         # K-Means clustering for labeling
     ├── training.py         # LightGBM training wrapper
+    ├── hmm.py              # HMM Logic and Feature Engineering
     └── utils.py            # Helpers
 ```
 
@@ -69,6 +71,24 @@ python notebook/modeling/train_model.py
 3.  Trains a separate Binary Classifier (LightGBM) for each non-neutral class.
 4.  Logs performance metrics (AUC, Precision, Recall, Feature Importance).
 
+### 3. HMM Regime Classification (`train_hmm.py`)
+Trains a Hidden Markov Model to decode market regimes.
+
+**Usage:**
+```bash
+python modeling/train_hmm.py
+```
+
+**What it does:**
+1.  Loads `train.parquet`.
+2.  Extracts HMM-specific features:
+    *   **Log Returns**: Direction.
+    *   **Realized Volatility**: Risk (Multi-timeframe).
+    *   **Volume Deviation**: Activity level.
+    *   **Trade Imbalance**: Buy/Sell pressure.
+3.  Trains a Gaussian HMM (default 3 states).
+4.  Outputs state interpretation (Mean/Std of features per state) and saves model to `data/hmm_model.pkl`.
+
 ## Configuration
 Adjust parameters in `config.py`:
 - `VOLUME_BAR_THRESHOLD`: Size of volume bars.
@@ -80,4 +100,5 @@ Adjust parameters in `config.py`:
 - `pandas`, `numpy`
 - `iisignature` (Vital for signature calculation)
 - `lightgbm`
+- `hmmlearn` (For HMM Regime Classification)
 - `scikit-learn`
