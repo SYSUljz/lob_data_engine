@@ -1,24 +1,19 @@
 import iisignature
 import pandas as pd
 import numpy as np
+import pyarrow as pa
 import pyarrow.parquet as pq
+import pyarrow.dataset as ds
 import os
 import config
 from . import features
 from . import labeling
 
-def load_raw_row_groups(pf, row_group_indices):
-    """Load specific row groups from ParquetFile."""
-    df_list = []
-    for i in row_group_indices:
-        if i < pf.num_row_groups:
-            df_list.append(pf.read_row_group(i).to_pandas())
-            
-    if not df_list:
+def preprocess_df(df):
+    """Common preprocessing for raw trade dataframes."""
+    if df.empty:
         return pd.DataFrame()
         
-    df = pd.concat(df_list, ignore_index=True)
-    
     # Format conversion
     df['tradetime'] = pd.to_datetime(df['transact_time'], unit='ms')
     cols = ["price", "quantity"]
@@ -124,34 +119,93 @@ def aggregate_chunk(df_chunk, threshold=config.VOLUME_BAR_THRESHOLD):
     
     return vbars, residue
 
-def process_pipeline(raw_path, row_groups=None, batch_size=5):
+def process_pipeline(raw_path, row_groups=None, batch_size=5, filters=None, chunk_size=1_000_000):
     """
-    Full ETL pipeline with Chunked Processing to avoid OOM.
+    Full ETL pipeline with Chunked Processing. Supports single Parquet and Hive Dataset.
     """
-    print(f"Starting Chunked Pipeline (Batch Size={batch_size})...")
-    pf = pq.ParquetFile(raw_path)
+    print(f"Starting Pipeline (Path: {raw_path})...")
     
-    if row_groups is None:
-        row_groups = range(pf.num_row_groups)
-    
-    # Create batches of row group indices
-    batches = [row_groups[i:i + batch_size] for i in range(0, len(row_groups), batch_size)]
-    
+    # 1. Initialize Dataset
+    if os.path.isdir(raw_path):
+        # Hive dataset
+        dataset = ds.dataset(raw_path, partitioning="hive")
+        
+        # Convert list of tuples to pyarrow Expression if needed
+        filter_expr = None
+        if filters:
+            for col, op, val in filters:
+                cond = (ds.field(col) == val) if op == '==' else \
+                       (ds.field(col) >= val) if op == '>=' else \
+                       (ds.field(col) <= val) if op == '<=' else \
+                       (ds.field(col) > val) if op == '>' else \
+                       (ds.field(col) < val) if op == '<' else None
+                if filter_expr is None:
+                    filter_expr = cond
+                else:
+                    filter_expr &= cond
+                    
+        scanner = dataset.scanner(filter=filter_expr)
+        
+        # Generator to group small RecordBatches into larger DataFrames
+        def hive_batch_generator(target_rows=chunk_size):
+            batch_buffer = []
+            current_rows = 0
+            for rb in scanner.to_batches():
+                df_rb = rb.to_pandas()
+                if df_rb.empty:
+                    continue
+                batch_buffer.append(df_rb)
+                current_rows += len(df_rb)
+                
+                if current_rows >= target_rows:
+                    yield pd.concat(batch_buffer, ignore_index=True)
+                    batch_buffer = []
+                    current_rows = 0
+            
+            if batch_buffer:
+                yield pd.concat(batch_buffer, ignore_index=True)
+
+        batches = hive_batch_generator()
+        print(f"Using Hive Dataset streaming (Buffered batches, target ~{chunk_size} rows)...")
+    else:
+        # Single Parquet file
+        pf = pq.ParquetFile(raw_path)
+        if row_groups is None:
+            row_groups = range(pf.num_row_groups)
+        
+        # Create batches of row group indices for manual batching
+        batch_indices_list = [row_groups[i:i + batch_size] for i in range(0, len(row_groups), batch_size)]
+        
+        def single_file_generator():
+            for batch_indices in batch_indices_list:
+                df_list = []
+                for idx in batch_indices:
+                    df_list.append(pf.read_row_group(idx).to_pandas())
+                yield pd.concat(df_list, ignore_index=True)
+        
+        batches = single_file_generator()
+        print(f"Using single file chunked reading ({len(batch_indices_list)} batches)...")
+
     all_vbars = []
     current_residue = None
     
-    for i, batch_indices in enumerate(batches):
-        print(f"Processing Batch {i+1}/{len(batches)} (Groups: {batch_indices})...")
-        
-        # 1. Load Batch
-        df_batch = load_raw_row_groups(pf, batch_indices)
-        
+    for i, batch in enumerate(batches):
+        if isinstance(batch, pa.RecordBatch):
+            df_batch = batch.to_pandas()
+        else:
+            df_batch = batch # Already a DataFrame from our generator
+            
         if df_batch.empty:
             continue
             
-        # 2. Prepend Residue from previous batch
+        # Preprocess (sort, types, etc.)
+        df_batch = preprocess_df(df_batch)
+        
+        # Prepend Residue from previous batch
         if current_residue is not None and not current_residue.empty:
             df_batch = pd.concat([current_residue, df_batch], ignore_index=True)
+            # Ensure sorted after merging residue
+            df_batch = df_batch.sort_values("tradetime")
             
         # 3. Aggregate
         vbars_chunk, next_residue = aggregate_chunk(df_batch)
@@ -160,6 +214,7 @@ def process_pipeline(raw_path, row_groups=None, batch_size=5):
             all_vbars.append(vbars_chunk)
             
         current_residue = next_residue
+        print(f"Processed batch {i+1}, generated {len(vbars_chunk)} bars.")
         
         # Explicit GC
         del df_batch

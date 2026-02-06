@@ -4,6 +4,7 @@ import os
 import joblib
 import config
 from src.hmm import MarketRegimeHMM
+from src.hmm_eval import HMMEvaluator
 
 def interpret_regimes(stats):
     """
@@ -74,6 +75,58 @@ def run_hmm_training():
     print("\n🏷️  Identified Regimes:")
     for state, name in regime_labels.items():
         print(f"State {state}: {name}")
+
+    # --- NEW: Evaluation Metrics ---
+    print("\n🕵️  Running Advanced Evaluation Metrics...")
+    
+    # helper to get feature names used by model
+    _, feature_cols = hmm_model.prepare_features(df)
+    
+    evaluator = HMMEvaluator(hmm_model, df_labeled, feature_cols)
+    eval_metrics = evaluator.evaluate_all()
+    
+    print("\n--- 1. Separation Metrics ---")
+    print(f"Log-Likelihood per Sample: {eval_metrics['separation']['log_likelihood_per_sample']:.4f}")
+    print(f"Avg Mahalanobis Distance:  {eval_metrics['separation']['mahalanobis_distance_mean']:.4f}")
+    
+    print("\n--- 2. Stability Metrics ---")
+    print(f"Mean Regime Duration:      {eval_metrics['stability']['mean_regime_duration']:.2f} samples")
+    print(f"Transition Matrix Entropy: {eval_metrics['stability']['transition_matrix_entropy']:.4f}")
+    
+    # User constraint check
+    if eval_metrics['stability']['mean_regime_duration'] < 5:
+        print("⚠️  WARNING: Mean Regime Duration is < 5 bars. Consider increasing penalty or smoothing.")
+        
+    print("\n--- 3. Predictive Power ---")
+    print(f"Mutual Information (MI):   {eval_metrics['predictive']['mutual_information']:.4f}")
+    print(f"Var Reduction (R2-like):   {eval_metrics['predictive']['variance_reduction']:.4%}")
+    
+    print("\n--- 4. Feature Importance ---")
+    feat_imp = evaluator.feature_importance()
+    
+    # 1. Global Importance
+    print("\n   [Global Permutation Importance]")
+    sorted_imp = sorted(feat_imp['permutation_importance'].items(), key=lambda x: x[1], reverse=True)
+    for feat, score in sorted_imp:
+        print(f"   {feat:<25}: {score:.4%}")
+        
+    # 2. State Characteristics
+    print("\n   [State Key Characteristics (Top 3 Deviation)]")
+    features_list = feat_imp['state_z_scores'].keys()
+    
+    for s in features_list:
+        z_scores = feat_imp['state_z_scores'][s]
+        # Sort by absolute Z-score to find most "defining" features (positive or negative)
+        sorted_z = sorted(z_scores.items(), key=lambda x: abs(x[1]), reverse=True)[:3]
+        
+        desc = []
+        for feat, z in sorted_z:
+            direction = "High" if z > 0 else "Low"
+            desc.append(f"{direction} {feat} ({z:+.2f})")
+            
+        print(f"   State {s}: {', '.join(desc)}")
+        
+    # -------------------------------
     
     # 5. 保存模型及元数据
     # 将标签映射一起保存，方便回测调用

@@ -9,11 +9,21 @@ PROCESSED_DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 
 # Raw Data Path
 RAW_DATA_PATH = os.path.join(DATA_DIR, "BTCUSDT-aggTrades-2025-09-01_to_2026-01-25.parquet")
+RAW_DATA_HIVE = os.path.join(DATA_DIR, "symbol=BTCUSDT")
+
+# Data Filtering for Hive
+DATA_FILTERS = [
+    # ('symbol', '==', 'BTCUSDT'), # No longer needed if we point directly to the folder
+    ('type', '==', 'aggTrades'),
+    # Add date range filters here if needed:
+    # ('date', '>=', '2025-09-01'),
+    # ('date', '<=', '2026-01-25'),
+]
 
 # ==========================================
 # Data Processing & Sampling
 # ==========================================
-VOLUME_BAR_THRESHOLD = 100_000_00  # 10M USDT per bar
+VOLUME_BAR_THRESHOLD = 100_000_000  # 10M USDT per bar
 WINDOW_CVD_FAST = 300
 WINDOW_ROLLING_STATS = 2000
 
